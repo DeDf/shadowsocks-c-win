@@ -42,13 +42,13 @@ int get_method(char *method)
     return -1;
 }
 
-int MakeKey(char *password)
+int MakeKey(unsigned char *password)
 {
     int i;
     //
     MD5_CTX mdContext;
     MD5Init (&mdContext);
-    MD5Update (&mdContext, "fengzi", 6);
+    MD5Update (&mdContext, password, 6);
     MD5Final (&mdContext);  // 前16字节！
 
     printf("key=");
@@ -60,7 +60,7 @@ int MakeKey(char *password)
 
     MD5Init (&mdContext);
     MD5Update (&mdContext, key, 16);
-    MD5Update (&mdContext, "fengzi", 6);
+    MD5Update (&mdContext, password, 6);
     MD5Final (&mdContext);  // 后16字节!
 
     for(i=16; i<32; i++)
@@ -74,7 +74,7 @@ int MakeKey(char *password)
 // 
 //     MD5Init (&mdContext);
 //     MD5Update (&mdContext, &key[16], 16);
-//     MD5Update (&mdContext, "fengzi", 6);
+//     MD5Update (&mdContext, password, 6);
 //     MD5Final (&mdContext);
 // 
 //     printf("iv =");

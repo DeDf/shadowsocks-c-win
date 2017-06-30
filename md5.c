@@ -8,6 +8,9 @@
  ** Revised: 1/91 SRD,AJ,BSK,JT Reference C Version                  **
  **********************************************************************
  */
+#ifdef  __cplusplus
+extern "C" {
+#endif
 /*
  **********************************************************************
  ** Copyright (C) 1990, RSA Data Security, Inc. All rights reserved. **
@@ -249,8 +252,8 @@ static void Transform (UINT4 *buf, UINT4 *in)
 //   printf("%08x\n", buf[2]);
 //   printf("%08x\n\n", buf[3]);
 }
-/*
- **********************************************************************
- ** End of md5.c                                                     **
- ******************************* (cut) ********************************
- */
+
+#ifdef  __cplusplus
+}
+#endif
+
