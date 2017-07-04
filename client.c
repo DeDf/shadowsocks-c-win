@@ -6,6 +6,8 @@
 
 #include "common.h"
 
+AES_KEY AESkey;
+
 char rsv_frag[3] = {0x00, 0x00, 0x00};
 
 /* read text from local, encrypt and send to server */
@@ -13,15 +15,14 @@ int client_do_local_read(int sockfd, struct link *ln)
 {
 	int ret;
 
-	if (ln->state & LOCAL_SEND_PENDING)
-		return 0;
+    ret = recv(sockfd,
+        ln->ch_cipher + ln->cipher_len,
+        CIPHER_BUF_SIZE - ln->cipher_len,
+        0);
 
-	ret = do_read(sockfd, ln, "text", 0);
-	if (ret == -2) {
-		goto out;
-	} else if (ret == -1) {
-		return 0;
-	}
+    if (ret == -1)
+        return -1;
+    ln->cipher_len += ret;
 
 	if (ln->state & SS_UDP)
     {
@@ -31,20 +32,33 @@ int client_do_local_read(int sockfd, struct link *ln)
 	}
     else if (!(ln->state & SS_TCP_HEADER_SENT))
     {
-		if (add_data(sockfd, ln, "text",
-			     ln->cipher, ln->ss_header_len) == -1)
-			goto out;
+		
 	}
 
+    if (!(ln->state & SS_IV_SENT))
+    {
+        int i;
+        srand((unsigned int)time(NULL));
+        for (i = 0; i < 16/2; i++)
+        {
+            *((PUSHORT)ln->local_iv + i) = i;//(USHORT)rand();
+        }
+
+        memcpy(ln->orig_LIV, ln->local_iv, 16);
+    }
+    
 	if (crypto_encrypt(sockfd, ln) == -1)
 		goto out;
 
-	ret = do_send(ln->server_sockfd, ln, "cipher", 0);
-	if (ret == -2)
+    if (!(ln->state & SS_IV_SENT))
     {
-		goto out;
-	}
-    else if (ret == -1)
+        ret = send(ln->server_sockfd, ln->orig_LIV, ln->cipher_len + 16, 0);
+        ln->state &= SS_IV_SENT;
+    }
+    else
+	    ret = send(ln->server_sockfd, ln->ch_cipher, ln->cipher_len, 0);
+
+    if (ret == -1)
     {
 		ln->state |= SERVER_SEND_PENDING;
 	}
@@ -97,10 +111,7 @@ int client_do_server_read(int sockfd, struct link *ln)
 		}
 
 		if (!(ln->state & SS_IV_RECEIVED)) {
-// 			if (ln->cipher_len <= iv_len) {
-// 				ln->state |= SERVER_READ_PENDING;
-// 				return 0;
-// 			}
+            memcpy(ln->server_iv, ln->cipher, 16);
 		}
 	}
 
@@ -113,11 +124,21 @@ int client_do_server_read(int sockfd, struct link *ln)
 			goto out;
 	}
 
-	ret = do_send(ln->local_sockfd, ln, "text", 0);
-	if (ret == -2) {
+    if (!(ln->state & SS_IV_RECEIVED))
+    {
+	    ret = send(ln->local_sockfd,
+            ln->ch_cipher + 16,
+            ln->cipher_len - 16,
+            0);
+        ln->state &= SS_IV_RECEIVED;
+    }
+    else
+    {
+        ret = send(ln->local_sockfd,ln->ch_cipher, ln->cipher_len, 0);
+    }
+
+	if (ret == -1) {
 		goto out;
-	} else if (ret == -1) {
-		ln->state |= LOCAL_SEND_PENDING;
 	}
 
 	return 0;
@@ -125,7 +146,7 @@ out:
 	return -1;
 }
 
-int client_do_pollin(int sockfd, struct link *ln)
+int client_do_SS_proxy(int sockfd, struct link *ln)
 {
 	if (sockfd == ln->local_sockfd)
     {
@@ -133,99 +154,14 @@ int client_do_pollin(int sockfd, struct link *ln)
 			goto clean;
 		}
 	}
-    else if (sockfd == ln->server_sockfd)
-    {
-		if (client_do_server_read(sockfd, ln) == -1) {
-			goto clean;
-		}
-	}
+
+    if (client_do_server_read(ln->server_sockfd, ln) == -1) {
+        goto clean;
+    }
 
 	return 0;
 clean:
-	destroy_link(sockfd);
-	return -1;
-}
-
-int client_do_pollout(int sockfd, struct link *ln)
-{
-	int ret;
-    char optval;
-	int optlen = sizeof(optval);
-
-	/* write to local */
-	if (sockfd == ln->local_sockfd)
-    {
-		if (ln->state & LOCAL_SEND_PENDING)
-        {
-			ret = do_send(sockfd, ln, "text", 0);
-			if (ret == -2) {
-				goto clean;
-			} else if (ret == -1) {
-				goto out;
-			} else {
-				ln->state &= ~LOCAL_SEND_PENDING;
-			}
-
-			/* update socks5 state */
-			if (!(ln->state & SOCKS5_AUTH_REPLY_SENT))
-				ln->state &= SOCKS5_AUTH_REPLY_SENT;
-			else if (!(ln->state & SOCKS5_CMD_REPLY_SENT))
-				ln->state &= SOCKS5_CMD_REPLY_SENT;
-
-			goto out;
-		}
-        else {
-			//poll_rm(sockfd, POLLOUT);
-		}
-	}
-    else if (sockfd == ln->server_sockfd)
-    {
-		/* pending connect finished */
-		if (!(ln->state & SERVER)) {
-			if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR,
-				       &optval, (void *)&optlen) == -1) {
-				printf("%s: getsockopt() %s",
-					  __FUNCTION__, strerror(errno));
-				goto clean;
-			}
-
-			if (optval == 0) {
-				printf("%s: pending connect() finished",
-					  __FUNCTION__);
-				ln->time = time(NULL);
-				ln->state |= SERVER;
-			} else {
-				printf("%s: pending connect() failed",
-					  __FUNCTION__);
-				goto clean;
-			}
-		}
-
-		if (ln->state & SERVER_SEND_PENDING) {
-			/* write to server */
-			ret = do_send(sockfd, ln, "cipher", 0);
-			if (ret == -2) {
-				goto clean;
-			} else if (ret == -1) {
-				goto out;
-			} else {
-				ln->state &= ~SERVER_SEND_PENDING;
-
-				if (!(ln->state & SS_TCP_HEADER_SENT))
-					ln->state |= SS_TCP_HEADER_SENT;
-				goto out;
-			}
-		}
-        else {
-			//poll_rm(sockfd, POLLOUT);
-		}
-	}
-
-out:
-	return 0;
-clean:
-	printf("%s: close", __FUNCTION__);
-	destroy_link(sockfd);
+	destroy_link(ln);
 	return -1;
 }
 
@@ -260,7 +196,7 @@ DWORD WINAPI ProxyThread(struct link *ln)
         if (retlen == -1)
             return retlen;
 
-        if (check_socks5_cmd_header(buf, retlen))
+        if (check_socks5_cmd_header(buf, retlen, ln))
             cmd = SOCKS5_CMD_REP_FAILED;
         else
             cmd = SOCKS5_CMD_REP_SUCCEEDED;
@@ -274,11 +210,9 @@ DWORD WINAPI ProxyThread(struct link *ln)
         return -1;
 
 Loop:
-    retlen |= client_do_pollin( sockfd, ln);
-    retlen |= client_do_pollout(sockfd, ln);
-
+    retlen |= client_do_SS_proxy( sockfd, ln);
     if (!retlen)
-        goto Loop;  // 没有错误，循环处理
+        goto Loop;
 
     return retlen;
 }
@@ -352,8 +286,6 @@ int main(int argc, char **argv)
 	}
  
 out:
-    crypto_exit();
-
 	if (server_ai)
 		freeaddrinfo(server_ai);
 

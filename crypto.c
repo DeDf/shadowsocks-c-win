@@ -42,7 +42,7 @@ int get_method(char *method)
     return -1;
 }
 
-int MakeKey(unsigned char *password)
+int MakeKey(unsigned char *password, unsigned char *iv)
 {
     int i;
     //
@@ -70,20 +70,21 @@ int MakeKey(unsigned char *password)
     }
     printf("\n");
 
-//     char iv[EVP_MAX_IV_LENGTH];
-// 
-//     MD5Init (&mdContext);
-//     MD5Update (&mdContext, &key[16], 16);
-//     MD5Update (&mdContext, password, 6);
-//     MD5Final (&mdContext);
-// 
-//     printf("iv =");
-//     for(i=0; i<16; i++)
-//     {
-//         iv[i] = mdContext.digest[i];
-//         printf("%02X", mdContext.digest[i]);
-//     }
-//     printf("\n");
+    if (iv)
+    {
+    MD5Init (&mdContext);
+    MD5Update (&mdContext, &key[16], 16);
+    MD5Update (&mdContext, password, 6);
+    MD5Final (&mdContext);
+
+    printf("iv =");
+    for(i=0; i<16; i++)
+    {
+        iv[i] = mdContext.digest[i];
+        printf("%02X", mdContext.digest[i]);
+    }
+    printf("\n");
+    }
 
 	key[EVP_MAX_KEY_LENGTH] = '\0';
 
@@ -92,46 +93,16 @@ int MakeKey(unsigned char *password)
 
 int crypto_init(char *password, char *method)
 {
-// 	ERR_load_crypto_strings();
-// 	OpenSSL_add_all_algorithms();
-// 	OPENSSL_config(NULL);
     if (get_method(method) == -1)
         return -1;
-	MakeKey(password);
 
+	MakeKey(password, NULL);
 
-	return 0;
-}
-
-void crypto_exit(void)
-{
-// 	EVP_cleanup();
-// 	ERR_free_strings();
-}
-
-int add_iv(int sockfd, struct link *ln)
-{
-	int ret;
-	char *iv_p;
-
-	if (sockfd == ln->local_sockfd)
-		iv_p = ln->local_iv;
-	else if (sockfd == ln->server_sockfd)
-		iv_p = ln->server_iv;
-	else
-		goto err;
-
-	ret = add_data(sockfd, ln, "cipher", iv_p, iv_len);
-	if (ret != 0)
-		goto err;
-
-	ln->state |= SS_IV_SENT;
+    private_AES_set_encrypt_key(key, 256, &AESkey); // 初始化Rc2Key
 
 	return 0;
-err:
-	printf("%s failed", __FUNCTION__);
-	return -1;
 }
+
 
 /* iv is in the first iv_len byptes of ss tcp/udp header */
 int receive_iv(int sockfd, struct link *ln)
@@ -159,139 +130,108 @@ err:
 	return -1;
 }
 
-static int check_cipher(int sockfd, struct link *ln, const char *type)
+
+// CFB128，128是指AES算法是以128bit为单元处理数据的，与密钥位数无关！
+void CRYPTO_cfb128_encrypt(const unsigned char *in, unsigned char *out,
+                           size_t len, AES_KEY *key,
+                           unsigned char iv[16], int *num,
+                           int enc, block128_f block)
 {
-	int ret = 0;
-	char *iv_p;
-	EVP_CIPHER_CTX *ctx_p;
+    unsigned int n;
+    size_t l = 0;
 
-	if (sockfd == ln->local_sockfd)
-    {
-		iv_p  = ln->local_iv;
-		ctx_p = ln->local_ctx;
-	}
-    else if (sockfd == ln->server_sockfd)
-    {
-		iv_p  = ln->server_iv;
-		ctx_p = ln->server_ctx;
-	}
+    n = *num;
+    if (enc) {
+        while (l<len) {
+            if (n == 0) {
+                (*block)(iv, iv, key);
+            }
+            out[l] = iv[n] ^= in[l];
+            ++l;
+            n = (n+1) % 16;
+        }
+        *num = n;
+    }
     else {
-		goto err;
-	}
-
-	if (strcmp(type, "encrypt") == 0 &&
-	    !(ln->state & SS_IV_SENT))
-    {
-
-    srand((unsigned)time(NULL));
-    *(PUSHORT)iv_p     = (USHORT)rand();
-    *((PUSHORT)iv_p+1) = (USHORT)rand();
-    *((PUSHORT)iv_p+2) = (USHORT)rand();
-    *((PUSHORT)iv_p+3) = (USHORT)rand();
-    *((PUSHORT)iv_p+4) = (USHORT)rand();
-    *((PUSHORT)iv_p+5) = (USHORT)rand();
-    *((PUSHORT)iv_p+6) = (USHORT)rand();
-    *((PUSHORT)iv_p+7) = (USHORT)rand();
-	iv_p[iv_len] = '\0';
-
-// 		ret = EVP_EncryptInit_ex(ctx_p, evp_cipher,
-// 					 NULL, (void *)key,
-// 					 (void *)iv_p);
-
-// 		if (ret != 1)
-// 			goto err;
-	}
-    else if (strcmp(type, "decrypt") == 0 &&
-		   !(ln->state & SS_IV_RECEIVED))
-    {
-		if (receive_iv(sockfd, ln) == -1)
-			goto err;
-
-// 		ret = EVP_DecryptInit_ex(ctx_p, evp_cipher,
-// 					 NULL, (void *)key,
-// 					 (void *)iv_p);
-
-// 		if (ret != 1)
-// 			goto err;
-	}
-
-	return 0;
-err:
-	printf("%s failed\n", __FUNCTION__);
-	return -1;
+        while (l<len) {
+            unsigned char c;
+            if (n == 0) {
+                (*block)(iv, iv, key);
+            }
+            out[l] = iv[n] ^ (c = in[l]); iv[n] = c;
+            ++l;
+            n = (n+1) % 16;
+        }
+        *num=n;
+    }
 }
+
 
 int crypto_encrypt(int sockfd, struct link *ln)
 {
-	EVP_CIPHER_CTX *ctx_p;
+    int num = 0;
+    EVP_CIPHER_CTX *ctx_p;
 
-	if (check_cipher(sockfd, ln, "encrypt") == -1)
-		goto err;
-
-	if (sockfd == ln->local_sockfd)
+    if (sockfd == ln->local_sockfd)
     {
-		ctx_p = ln->local_ctx;
-	}
-    else if (sockfd == ln->server_sockfd) {
-		ctx_p = ln->server_ctx;
-	}
-    else {
-		goto err;
-	}
+        ctx_p = ln->local_ctx;
+    }
+    else if (sockfd == ln->server_sockfd)
+    {
+        ctx_p = ln->server_ctx;
+    }
+    else
+    {
+        goto err;
+    }
 
-// 	if (EVP_EncryptUpdate(ctx_p, ln->cipher, &ln->cipher_len,
-// 			      ln->text, ln->text_len) != 1)
-//     {
-// 		goto err;
-//     }
+    CRYPTO_cfb128_encrypt(
+        (unsigned char *)ln->ch_cipher,
+        (unsigned char *)ln->ch_cipher,
+        ln->cipher_len,
+        &AESkey,
+        ln->local_iv,
+        &num,
+        1,
+        &AES_encrypt);
 
-	if (!(ln->state & SS_IV_SENT))
-		if (add_iv(sockfd, ln) == -1)
-			goto err;
-
-	/* encryption succeeded, so text buffer is not needed */
-	ln->text_len = 0;
-
-	return ln->cipher_len;
+    return ln->cipher_len;
 err:
-	printf("%s failed\n", __FUNCTION__);
-	return -1;
+    printf("%s failed\n", __FUNCTION__);
+    return -1;
 }
 
 int crypto_decrypt(int sockfd, struct link *ln)
 {
-	int len = 0, text_len;
-	EVP_CIPHER_CTX *ctx_p;
+    int num = 0;
 
-	if (check_cipher(sockfd, ln, "decrypt") == -1)
-		goto err;
+    EVP_CIPHER_CTX *ctx_p;
 
-	if (sockfd == ln->local_sockfd)
+    if (sockfd == ln->local_sockfd)
     {
-		ctx_p = ln->local_ctx;
-	}
+        ctx_p = ln->local_ctx;
+    }
     else if (sockfd == ln->server_sockfd)
     {
-		ctx_p = ln->server_ctx;
-	}
+        ctx_p = ln->server_ctx;
+    }
     else
     {
-		goto err;
-	}
+        goto err;
+    }
 
-// 	if (EVP_DecryptUpdate(ctx_p, ln->text, &len,
-// 			      ln->cipher, ln->cipher_len) != 1)
-//     {
-// 		goto err;
-// 	}
+    CRYPTO_cfb128_encrypt(
+        (unsigned char *)ln->cipher,
+        (unsigned char *)ln->ch_cipher,
+        ln->cipher_len,
+        &AESkey,
+        ln->orig_LIV,
+        &num,
+        0,
+        &AES_encrypt);
 
-	text_len = len;
-	ln->text_len = text_len;
-	/* decryption succeeded, so cipher buffer is not needed */
-	ln->cipher_len = 0;
-
-	return text_len;
+    return ln->cipher_len;
 err:
-	printf("%s failed\n", __FUNCTION__);
-	return -1;
+    printf("%s failed\n", __FUNCTION__);
+    return -1;
 }

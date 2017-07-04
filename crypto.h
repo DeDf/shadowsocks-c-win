@@ -13,8 +13,10 @@ extern char password[MAX_PWD_LEN + 1];
 extern char method[MAX_METHOD_NAME_LEN + 1];
 extern int iv_len;
 
+typedef void (*block128_f)(const unsigned char *in, unsigned char *out,
+                           const AES_KEY *key);
+
 int  crypto_init(char *key, char *method);
-void crypto_exit(void);
 int  crypto_encrypt(int sockfd, struct link *ln);
 int  crypto_decrypt(int sockfd, struct link *ln);
 

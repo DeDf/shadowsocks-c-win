@@ -451,36 +451,10 @@ struct link *get_link(int sockfd)
 	return link_head[sockfd];
 }
 
-static void free_link(struct link *ln)
+void destroy_link(struct link *ln)
 {
-	if (ln->text)
-		free(ln->text);
-
-	if (ln->cipher)
-		free(ln->cipher);
-
-// 	if (ln->local_ctx)
-// 		EVP_CIPHER_CTX_free(ln->local_ctx);
-// 
-// 	if (ln->server_ctx)
-// 		EVP_CIPHER_CTX_free(ln->server_ctx);
-
-	if (ln)
-		free(ln);
-}
-
-void destroy_link(int sockfd)
-{
-	struct link *ln;
-
-	ln = get_link(sockfd);
-	if (ln == NULL)
-		return;
-
 	link_head[ln->local_sockfd] = NULL;
 	link_head[ln->server_sockfd] = NULL;
-	closesocket(ln->local_sockfd);
-	closesocket(ln->server_sockfd);
 
 	if (ln->local_sockfd >= 0)
 		closesocket(ln->local_sockfd);
@@ -488,7 +462,14 @@ void destroy_link(int sockfd)
 	if (ln->server_sockfd >= 0)
 		closesocket(ln->server_sockfd);
 
-	free_link(ln);
+    if (ln->text)
+        free(ln->text);
+
+    if (ln->cipher)
+        free(ln->cipher);
+
+    if (ln)
+        free(ln);
 }
 
 /* for udp, we just bind it, since udp can't listen */
@@ -811,7 +792,7 @@ int check_socks5_auth_header(char *buf, int len)  // done!
 	return -1;
 }
 
-int check_socks5_cmd_header(char *buf, int len)
+int check_socks5_cmd_header(char *buf, int len, struct link *ln)
 {
 	char cmd, atyp;
 	int ss_header_len;
@@ -857,8 +838,7 @@ int check_socks5_cmd_header(char *buf, int len)
 			goto too_short;
 	}
     else if (atyp == SOCKS5_ADDR_DOMAIN) {
-		/* atyp(1) + addr_size(1) + domain_length(req->dst[0]) +
-		 * port(2) */
+		/* atyp(1) + addr_size(1) + domain_length(req->dst[0]) + port(2) */
 		ss_header_len = 1 + 1 + req->dst[0] + 2;
 
 		if (len < ss_header_len + 3)
@@ -876,14 +856,9 @@ int check_socks5_cmd_header(char *buf, int len)
 		return -1;
 	}
 
-	/* remove VER, CMD, RSV for shadowsocks protocol */
-// 	if (rm_data(sockfd, ln, "text", 3) == -1)
-// 		return -1;
-
-    /* copy ss tcp header to cipher buffer, it will be sent
-	 * together with data received from local */
-	//memcpy(ln->cipher, ln->text, ss_header_len);
-
+	/* remove VER, CMD, RSV for shadowsocks protocol - ss tcp header */
+	memcpy(ln->ch_cipher, buf+3, ss_header_len);
+    ln->cipher_len = ss_header_len;
 	return 0;
 
 too_short:

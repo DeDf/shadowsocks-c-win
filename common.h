@@ -38,7 +38,10 @@
 #define no_argument       0
 
 #include "md5.h"
+#include "aes.h"
 #include "crypto.h"
+
+extern AES_KEY AESkey;
 
 struct option {
     char *OptionName;
@@ -82,6 +85,9 @@ enum link_state {
 #define EVP_MAX_KEY_LENGTH 32+1
 #define EVP_MAX_IV_LENGTH  16
 
+#pragma pack(push) // 保存对齐状态
+#pragma pack(4)    // 设定为4字节对齐
+
 struct link {
 	enum link_state state;
 	time_t time;
@@ -96,8 +102,12 @@ struct link {
 	void *text;
 	void *cipher;
 	char local_iv[EVP_MAX_IV_LENGTH];
+    char orig_LIV[EVP_MAX_IV_LENGTH];
+    char ch_cipher[CIPHER_BUF_SIZE];
 	char server_iv[EVP_MAX_IV_LENGTH];
 };
+
+#pragma pack(pop)  // 恢复对齐状态
 
 #define SOCKS5_METHOD_NOT_REQUIRED 0x00
 #define SOCKS5_METHOD_ERROR        0XFF
@@ -159,13 +169,10 @@ extern struct link **link_head;
 void check_ss_option(int argc, char **argv, const char *type);
 void ss_init(void);
 void ss_exit(void);
-// int poll_set(int sockfd, short events);
-// int poll_add(int sockfd, short events);
-// int poll_rm(int sockfd, short events);
-// int poll_del(int sockfd);
+
 struct link *create_link(int sockfd, const char *type);
 // struct link *get_link(int sockfd);
-void destroy_link(int sockfd);
+void destroy_link(struct link *ln);
 
 int do_listen(struct addrinfo *info, const char *type);
 
@@ -175,7 +182,7 @@ int rm_data(int sockfd, struct link *ln, const char *type, int size);
 // int check_ss_header(int sockfd, struct link *ln);
 
 int check_socks5_auth_header(char *buf, int len);
-int check_socks5_cmd_header( char *buf, int len);
+int check_socks5_cmd_header(char *buf, int len, struct link *ln);
 int create_socks5_cmd_reply(int sockfd, struct addrinfo *server, int cmd);
 
 int do_read(int sockfd, struct link *ln, const char *type, int offset);
